@@ -324,7 +324,10 @@
             btn.disabled = true;
             lucide.createIcons();
 
-            const promptText = "Generate 3 advanced multiple choice questions about IT Ethics, Intellectual Property (like patents and copyrights), and the Data Privacy Act. Ensure the questions are distinct and challenging.";
+            // Provide context of existing questions to the AI so it knows what to avoid
+            const existingQsText = quizData.map(q => q.q).join(" | ");
+            const promptText = `Generate 3 new, advanced multiple choice questions about IT Ethics, Intellectual Property (like patents and copyrights), and the Data Privacy Act. 
+            CRITICAL: Ensure the questions are distinct and challenging. DO NOT duplicate or closely rephrase any of these existing questions: ${existingQsText}`;
 
             try {
                 const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
@@ -366,29 +369,51 @@
                 rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
                 
                 const parsedData = JSON.parse(rawText);
-                const newQuestions = parsedData.questions || parsedData;
+                let newQuestions = parsedData.questions || parsedData;
                 
                 if (!Array.isArray(newQuestions) || newQuestions.length === 0) {
                     throw new Error("Invalid question format returned");
                 }
+
+                // Programmatic Deduplication: Double check that no exact matches slip through
+                const existingQuestionSet = new Set(quizData.map(item => item.q.toLowerCase().trim()));
+                newQuestions = newQuestions.filter(nq => !existingQuestionSet.has(nq.q.toLowerCase().trim()));
+
+                if (newQuestions.length === 0) {
+                    showToast("AI generated duplicate questions. Please try again.", true);
+                    btn.innerHTML = originalText;
+                    btn.disabled = false;
+                    return;
+                }
                 
-                // Add new questions and restart
+                // Add unique new questions and restart
                 quizData = [...quizData, ...newQuestions];
-                showToast("Successfully generated new questions!", false);
+                showToast(`Successfully added ${newQuestions.length} unique question(s)!`, false);
                 startQuiz();
 
             } catch (e) {
                 console.error("Quiz generation error:", e);
                 
                 if (e.message.includes("401") || e.message.includes("403")) {
-                    showToast("Session Expired (401). Using AI fallback questions. Refresh the page to restore your AI token.", false);
                     const fallbackQuestions = [
                         { q: "[Fallback Generated] Under the Data Privacy Act, who is required to appoint a Data Protection Officer (DPO)?", options: ["Only government agencies", "Only IT companies", "Personal Information Controllers and Processors", "Only companies with over 1000 employees"], answer: 2 },
                         { q: "[Fallback Generated] Which of the following best describes 'Logical Malleability' in computer ethics?", options: ["Computers are prone to physical damage", "Computers can be programmed to do almost any logical task", "Software breaks easily under stress", "Hackers can easily steal data"], answer: 1 },
                         { q: "[Fallback Generated] What is the primary difference between a Patent and a Copyright for software?", options: ["Patents protect the source code text; Copyrights protect the algorithm.", "Patents protect the underlying idea/method; Copyrights protect the exact expression.", "They are exactly the same in the Philippines.", "Software cannot be legally protected by either."], answer: 1 }
                     ];
-                    quizData = [...quizData, ...fallbackQuestions];
-                    startQuiz();
+
+                    // Also deduplicate fallback questions!
+                    const existingQuestionSet = new Set(quizData.map(item => item.q.toLowerCase().trim()));
+                    const uniqueFallbacks = fallbackQuestions.filter(fq => !existingQuestionSet.has(fq.q.toLowerCase().trim()));
+
+                    if (uniqueFallbacks.length > 0) {
+                        showToast("Session Expired (401). Using AI fallback questions. Refresh the page to restore your AI token.", false);
+                        quizData = [...quizData, ...uniqueFallbacks];
+                        startQuiz();
+                    } else {
+                        showToast("Session Expired (401). No more unique fallback questions available. Please refresh.", true);
+                        btn.innerHTML = originalText; 
+                        btn.disabled = false; 
+                    }
                 } else {
                     btn.innerHTML = 'Failed. Try Again?';
                     showToast("Failed to generate questions. Please try again.");
