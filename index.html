@@ -273,6 +273,26 @@
             }
         }
 
+        // Fuzzy Match Deduplication Check
+        // Compares significant keywords to find variations/rephrasings
+        function isDuplicateQuestion(newQuestionText, existingQuestions) {
+            const extractKeywords = text => text.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 3);
+            const newWords = extractKeywords(newQuestionText);
+            
+            if (newWords.length === 0) return false;
+            
+            return existingQuestions.some(existing => {
+                const existingWords = extractKeywords(existing.q);
+                if (existingWords.length === 0) return false;
+                
+                // Count how many words overlap
+                const intersection = newWords.filter(w => existingWords.includes(w));
+                // If more than 60% of the significant words match, consider it a duplicate
+                const overlapRatio = intersection.length / Math.min(newWords.length, existingWords.length);
+                return overlapRatio > 0.6;
+            });
+        }
+
         // --- LLM FEATURES ---
         async function explainWithGemini(event) {
             event.stopPropagation(); // Prevent card from flipping back
@@ -324,10 +344,23 @@
             btn.disabled = true;
             lucide.createIcons();
 
+            // Randomize prompt focus to force variety
+            const focusAreas = [
+                "Philippine Data Privacy Act (RA 10173) rights and definitions", 
+                "Intellectual Property Code (RA 8293) and Fair Use principles", 
+                "Ethical Theories (Kantianism, Consequentialism, Relativism, etc.)", 
+                "Computer Ethics and the Invisibility Factor", 
+                "Notable Data Breaches and Security issues",
+                "Patents vs Copyrights vs Trade Secrets",
+                "Virtue Ethics, Care Ethics, and Existentialism"
+            ];
+            const shuffledTopics = focusAreas.sort(() => 0.5 - Math.random());
+            const randomFocus = `${shuffledTopics[0]} and ${shuffledTopics[1]}`;
+
             // Provide context of existing questions to the AI so it knows what to avoid
             const existingQsText = quizData.map(q => q.q).join(" | ");
-            const promptText = `Generate 3 new, advanced multiple choice questions about IT Ethics, Intellectual Property (like patents and copyrights), and the Data Privacy Act. 
-            CRITICAL: Ensure the questions are distinct and challenging. DO NOT duplicate or closely rephrase any of these existing questions: ${existingQsText}`;
+            const promptText = `Generate 3 new, advanced multiple choice questions specifically focusing on a mix of: ${randomFocus}. 
+            CRITICAL: Ensure the questions are distinct and challenging. DO NOT duplicate or closely rephrase any of these existing concepts: ${existingQsText}`;
 
             try {
                 const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
@@ -375,12 +408,11 @@
                     throw new Error("Invalid question format returned");
                 }
 
-                // Programmatic Deduplication: Double check that no exact matches slip through
-                const existingQuestionSet = new Set(quizData.map(item => item.q.toLowerCase().trim()));
-                newQuestions = newQuestions.filter(nq => !existingQuestionSet.has(nq.q.toLowerCase().trim()));
+                // Advanced Programmatic Deduplication: Use Fuzzy matching logic
+                newQuestions = newQuestions.filter(nq => !isDuplicateQuestion(nq.q, quizData));
 
                 if (newQuestions.length === 0) {
-                    showToast("AI generated duplicate questions. Please try again.", true);
+                    showToast("AI generated similar questions. Please click generate again for fresh ones.", true);
                     btn.innerHTML = originalText;
                     btn.disabled = false;
                     return;
@@ -388,29 +420,30 @@
                 
                 // Add unique new questions and restart
                 quizData = [...quizData, ...newQuestions];
-                showToast(`Successfully added ${newQuestions.length} unique question(s)!`, false);
+                showToast(`Successfully added ${newQuestions.length} unique question(s) on ${randomFocus.split(' ')[0]}!`, false);
                 startQuiz();
 
             } catch (e) {
                 console.error("Quiz generation error:", e);
                 
                 if (e.message.includes("401") || e.message.includes("403")) {
-                    const fallbackQuestions = [
-                        { q: "[Fallback Generated] Under the Data Privacy Act, who is required to appoint a Data Protection Officer (DPO)?", options: ["Only government agencies", "Only IT companies", "Personal Information Controllers and Processors", "Only companies with over 1000 employees"], answer: 2 },
-                        { q: "[Fallback Generated] Which of the following best describes 'Logical Malleability' in computer ethics?", options: ["Computers are prone to physical damage", "Computers can be programmed to do almost any logical task", "Software breaks easily under stress", "Hackers can easily steal data"], answer: 1 },
-                        { q: "[Fallback Generated] What is the primary difference between a Patent and a Copyright for software?", options: ["Patents protect the source code text; Copyrights protect the algorithm.", "Patents protect the underlying idea/method; Copyrights protect the exact expression.", "They are exactly the same in the Philippines.", "Software cannot be legally protected by either."], answer: 1 }
+                    const fallbackPool = [
+                        { q: "[Fallback] Under the Data Privacy Act, who is required to appoint a Data Protection Officer (DPO)?", options: ["Only government agencies", "Only IT companies", "Personal Information Controllers and Processors", "Only companies with over 1000 employees"], answer: 2 },
+                        { q: "[Fallback] Which of the following best describes 'Logical Malleability' in computer ethics?", options: ["Computers are prone to physical damage", "Computers can be programmed to do almost any logical task", "Software breaks easily under stress", "Hackers can easily steal data"], answer: 1 },
+                        { q: "[Fallback] What is the primary difference between a Patent and a Copyright for software?", options: ["Patents protect the source code text; Copyrights protect the algorithm.", "Patents protect the underlying idea/method; Copyrights protect the exact expression.", "They are exactly the same in the Philippines.", "Software cannot be legally protected by either."], answer: 1 },
+                        { q: "[Fallback] Which mode of acquiring ownership under the Civil Code specifically applies to programmers creating new software?", options: ["Occupation", "Tradition", "Intellectual Creation", "Prescription"], answer: 2 },
+                        { q: "[Fallback] According to the 3 Levels of Computer Ethics, discussing a data breach on social media falls under:", options: ["POP (Popular)", "PARA (Analytical)", "THEORETICAL", "None of the above"], answer: 0 }
                     ];
 
-                    // Also deduplicate fallback questions!
-                    const existingQuestionSet = new Set(quizData.map(item => item.q.toLowerCase().trim()));
-                    const uniqueFallbacks = fallbackQuestions.filter(fq => !existingQuestionSet.has(fq.q.toLowerCase().trim()));
+                    // Deduplicate fallback questions using the fuzzy match logic
+                    const uniqueFallbacks = fallbackPool.filter(fq => !isDuplicateQuestion(fq.q, quizData)).slice(0, 3);
 
                     if (uniqueFallbacks.length > 0) {
                         showToast("Session Expired (401). Using AI fallback questions. Refresh the page to restore your AI token.", false);
                         quizData = [...quizData, ...uniqueFallbacks];
                         startQuiz();
                     } else {
-                        showToast("Session Expired (401). No more unique fallback questions available. Please refresh.", true);
+                        showToast("Session Expired (401). You have answered all offline questions. Please refresh.", true);
                         btn.innerHTML = originalText; 
                         btn.disabled = false; 
                     }
@@ -492,7 +525,7 @@
             { category: "Intellectual Property", question: "Plagiarism vs Copyright Infringement", answer: "<b>Plagiarism</b>: ETHICAL violation (taking credit for someone's ideas).<br><b>Infringement</b>: LEGAL violation (copying without permission)." }
         ];
 
-        let quizData = [
+        let masterQuizPool = [
             { q: "Which ethical theory states that 'The end justifies the means'?", options: ["Consequentialism", "Kantianism", "Virtue Ethics", "Divine Command Theory"], answer: 0 },
             { q: "According to Existentialist Ethics, morality is:", options: ["Based on the Bible", "Subjective, and individuals create their own values", "Relative to cultures only", "Based on self-interest"], answer: 1 },
             { q: "What are the 3 main areas of ethics?", options: ["Meta-ethics, Normative ethics, Applied ethics", "Subjective ethics, Cultural ethics, Moral ethics", "POP ethics, PARA ethics, Theoretical ethics", "Information ethics, Decisional ethics, Accessibility ethics"], answer: 0 },
@@ -502,8 +535,27 @@
             { q: "Are computer programs patentable in the Philippines under RA 8293?", options: ["Yes, if they are open-source", "Yes, if tied to hardware", "No, they are excluded from patents", "No, unless they are used for business"], answer: 2 },
             { q: "In Data Privacy, an entity to whom a controller outsources the processing of personal data is called:", options: ["Personal Information Controller (PIC)", "Data Subject", "National Privacy Commission (NPC)", "Personal Information Processor (PIP)"], answer: 3 },
             { q: "Confidential data protected by law, such as information given by a client to their lawyer, falls under:", options: ["Sensitive Personal Information", "Privileged Information", "Public Information", "Processing Data"], answer: 1 },
-            { q: "A high-tech scam that uses spam or pop-up messages to deceive a person into disclosing sensitive information is:", options: ["Phishing", "Identity Theft", "Decompilation", "Data Breach"], answer: 0 }
+            { q: "A high-tech scam that uses spam or pop-up messages to deceive a person into disclosing sensitive information is:", options: ["Phishing", "Identity Theft", "Decompilation", "Data Breach"], answer: 0 },
+            { q: "Which theory states there are no universal moral norms?", options: ["Relativism", "Kantianism", "Divine Command Theory", "Contractarianism"], answer: 0 },
+            { q: "Morality based on developing good character traits refers to:", options: ["Virtue Ethics", "Care Ethics", "Existentialism", "Ethical Egoism"], answer: 0 },
+            { q: "Which is NOT one of the 3 main problems in Computer Ethics?", options: ["Logical Malleability", "Invisibility Factor", "Impact on Society", "Hardware Degradation"], answer: 3 },
+            { q: "What is the 'First to File Rule' in intellectual property?", options: ["Patent goes to the earliest filer", "Copyright goes to first publisher", "Trademarks are first come first serve", "Patents go to the first inventor even if filed later"], answer: 0 },
+            { q: "A plan, process, or tool known only to its owner and employees that gives a competitive advantage is a:", options: ["Trade Secret", "Patent", "Copyright", "Trademark"], answer: 0 },
+            { q: "Which right allows a data subject to suspend or withdraw false or outdated personal data?", options: ["Right to Erasure or Blocking", "Right to Access", "Right to Object", "Right to Data Portability"], answer: 0 },
+            { q: "What happened in the 2016 COMELEC Data Breach?", options: ["70 million voter records were leaked", "900k client records were stolen", "P167M was stolen via ATM", "Health records were locked by ransomware"], answer: 0 },
+            { q: "Which view on privacy focuses on physically being left alone?", options: ["Accessibility privacy", "Decisional privacy", "Informational privacy", "Data privacy"], answer: 0 },
+            { q: "If a work is created by an employee outside of their regular duties, even using employer facilities, who owns the copyright?", options: ["The Employee", "The Employer", "The Government", "It is public domain"], answer: 0 },
+            { q: "Translating compiled code to achieve inter-operability, which may constitute Fair Use, is called:", options: ["Decompilation", "Plagiarism", "Identity Theft", "Data Processing"], answer: 0 }
         ];
+
+        let quizData = [];
+        
+        function initRandomQuizData() {
+            // Pick 10 completely random questions from the master pool on load
+            const shuffledPool = [...masterQuizPool].sort(() => 0.5 - Math.random());
+            quizData = shuffledPool.slice(0, 10);
+        }
+        initRandomQuizData();
 
         // --- APP STATE ---
         let currentMode = 'flashcards'; // 'flashcards' or 'quiz'
